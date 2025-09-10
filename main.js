@@ -12,6 +12,7 @@ const programs = [];
 const buffers = [];
 const uniforms = [];
 const vaos = [];
+const textures = [];
 
 // Heap views
 const u8  = () => new Uint8Array(memory.buffer);
@@ -25,10 +26,6 @@ function cstr(ptr) {
     return textDec.decode(bytes.subarray(ptr, end));
 }
 function view(ptr, byteLen) { return u8().subarray(ptr, ptr + byteLen); }
-function checkGLErr(label) {
-    const e = gl.getError();
-    if (e !== gl.NO_ERROR) console.error(`WebGL error after ${label}: 0x${e.toString(16)}`);
-}
 
 function resize() {
     const dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -56,7 +53,7 @@ const imports = {
             gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         },
 
-        // Math fallbacks
+        // Math fallbacks if LLVM emits calls
         sinf: x => Math.sin(x),
         cosf: x => Math.cos(x),
         tanf: x => Math.tan(x),
@@ -111,12 +108,27 @@ const imports = {
         gl_uniform_matrix4fv: (uid, transpose, ptr) => {
             gl.uniformMatrix4fv(uniforms[uid], !!transpose, f32().subarray(ptr>>2, (ptr>>2) + 16));
         },
+        gl_uniform_matrix3fv: (uid, transpose, ptr) => {
+            gl.uniformMatrix3fv(uniforms[uid], !!transpose, f32().subarray(ptr>>2, (ptr>>2) + 9));
+        },
+        gl_uniform1i: (uid, x) => { gl.uniform1i(uniforms[uid], x); },
+        gl_uniform3f: (uid, x, y, z) => { gl.uniform3f(uniforms[uid], x, y, z); },
 
         // State + draw
         gl_viewport: (x, y, w, h) => { gl.viewport(x, y, w, h); },
         gl_clear_color: (r,g,b,a) => { gl.clearColor(r,g,b,a); },
         gl_clear: (mask) => { gl.clear(mask); },
         gl_draw_elements: (mode, count, type, offset) => { gl.drawElements(mode, count, type, offset); },
+
+        // Textures
+        gl_create_texture: () => { const t = gl.createTexture(); textures.push(t); return textures.length - 1; },
+        gl_bind_texture: (target, tid) => { gl.bindTexture(target, textures[tid]); },
+        gl_active_texture: (unit) => { gl.activeTexture(unit); },
+        gl_tex_parameteri: (target, pname, param) => { gl.texParameteri(target, pname, param); },
+        gl_tex_image_2d: (target, level, internalFormat, width, height, border, format, type, ptr) => {
+            const pixels = new Uint8Array(memory.buffer, ptr, width*height*4);
+            gl.texImage2D(target, level, internalFormat, width, height, border, format, type, pixels);
+        },
     }
 };
 
@@ -129,26 +141,11 @@ memory = wasm.exports.memory;
 imports.env.js_init();
 wasm.exports.init();
 
-// Verify GL state
-checkGLErr("post init");
-
 let tPrev = performance.now();
 function tick(tNow) {
     const dt = (tNow - tPrev) * 0.001;
     tPrev = tNow;
-
-    // Sanity: animate clear color to prove the loop runs.
-    const r = 0.2 + 0.2 * Math.sin(tNow * 0.001);
-    gl.clearColor(r, 0.1, 0.15, 1.0);
-
     wasm.exports.frame(dt);
-
-    // Trap errors each frame.
-    checkGLErr("frame");
-
-    // FPS in title for a quick signal.
-    if ((tNow | 0) % 500 < 16) document.title = `fps ~${(1/dt).toFixed(0)}`;
-
     requestAnimationFrame(tick);
 }
 requestAnimationFrame(tick);
